@@ -101,6 +101,18 @@ function normalizeOptionalId(value: unknown): string | null {
   return normalized ? normalized : null;
 }
 
+// Accept an original timestamp from an import file (e.g. Bitwarden's creationDate /
+// revisionDate) so migrated items keep their history. Rejects unparseable values and
+// anything in the future so imports cannot forge "newer" revisions.
+function normalizeImportedTimestamp(value: unknown, nowMs: number): string | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  const parsedMs = Date.parse(raw);
+  if (!Number.isFinite(parsedMs) || parsedMs > nowMs || parsedMs <= 0) return null;
+  return new Date(parsedMs).toISOString();
+}
+
 async function runBatchInChunks(db: D1Database, statements: D1PreparedStatement[], chunkSize: number): Promise<void> {
   for (let i = 0; i < statements.length; i += chunkSize) {
     const chunk = statements.slice(i, i + chunkSize);
@@ -129,7 +141,8 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
     return errorResponse(`Import exceeds maximum of ${LIMITS.performance.importItemLimit} items`, 400);
   }
 
-  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
   const batchChunkSize = LIMITS.performance.bulkMoveChunkSize;
 
   // Create folders and build index -> id mapping
@@ -195,6 +208,16 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
     const fields = readAliasedImportProp<any[] | null>(c, ['fields', 'Fields']);
     const passwordHistory = readAliasedImportProp<any[] | null>(c, ['passwordHistory', 'PasswordHistory']);
     const key = readAliasedImportProp<string | null>(c, ['key', 'Key']);
+    const importedCreatedAt = normalizeImportedTimestamp(
+      readAliasedImportProp<unknown>(c, ['creationDate', 'CreationDate']),
+      nowMs
+    );
+    const importedUpdatedAt = normalizeImportedTimestamp(
+      readAliasedImportProp<unknown>(c, ['revisionDate', 'RevisionDate']),
+      nowMs
+    );
+    const createdAt = importedCreatedAt ?? now;
+    const updatedAt = importedUpdatedAt && importedUpdatedAt >= createdAt ? importedUpdatedAt : (importedCreatedAt ?? now);
 
     const cipher: Cipher = {
       ...c,
@@ -266,8 +289,8 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
       driversLicense: driversLicense ?? null,
       passport: passport ?? null,
       key: key ?? null,
-      createdAt: now,
-      updatedAt: now,
+      createdAt,
+      updatedAt,
       archivedAt: null,
       deletedAt: null,
     };
