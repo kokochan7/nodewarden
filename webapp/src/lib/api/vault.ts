@@ -1443,8 +1443,67 @@ async function buildCipherPayload(
   return payload;
 }
 
-export async function buildCipherImportPayload(session: SessionState, draft: VaultDraft): Promise<Record<string, unknown>> {
-  return buildCipherPayload(session, draft, null);
+function normalizeImportedDate(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  const parsedMs = Date.parse(raw);
+  if (!Number.isFinite(parsedMs) || parsedMs <= 0 || parsedMs > Date.now()) return null;
+  return new Date(parsedMs).toISOString();
+}
+
+function readImportedPasswordHistory(value: unknown): CipherPasswordHistoryEntry[] {
+  if (!Array.isArray(value)) return [];
+  const out: CipherPasswordHistoryEntry[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Record<string, unknown>;
+    const password = typeof entry.password === 'string' ? entry.password : '';
+    if (!password) continue;
+    // Plaintext export values: force encryption via decPassword even if the text
+    // happens to look like a cipher string.
+    out.push({
+      password: '',
+      decPassword: password,
+      lastUsedDate: normalizeImportedDate(entry.lastUsedDate) ?? undefined,
+    });
+  }
+  return out;
+}
+
+/**
+ * Build an encrypted import payload from a plaintext draft. When `source` (the
+ * plaintext item from the export file) is given, history metadata that the draft
+ * cannot carry is preserved: creation/revision dates, password history and the
+ * login's password revision date.
+ */
+export async function buildCipherImportPayload(
+  session: SessionState,
+  draft: VaultDraft,
+  source?: Record<string, unknown> | null
+): Promise<Record<string, unknown>> {
+  const payload = await buildCipherPayload(session, draft, null);
+  if (!source || typeof source !== 'object') return payload;
+  if (!session.symEncKey || !session.symMacKey) throw new Error('Vault key unavailable');
+
+  const creationDate = normalizeImportedDate(source.creationDate);
+  const revisionDate = normalizeImportedDate(source.revisionDate);
+  if (creationDate) payload.creationDate = creationDate;
+  if (revisionDate) payload.revisionDate = revisionDate;
+
+  const importedHistory = readImportedPasswordHistory(source.passwordHistory);
+  if (importedHistory.length) {
+    const keys = await getCipherKeys(null, base64ToBytes(session.symEncKey), base64ToBytes(session.symMacKey));
+    const encrypted = await encryptPasswordHistory(importedHistory, keys.enc, keys.mac);
+    if (encrypted?.length) payload.passwordHistory = encrypted;
+  }
+
+  if (payload.login && typeof payload.login === 'object') {
+    const sourceLogin = source.login && typeof source.login === 'object' ? (source.login as Record<string, unknown>) : null;
+    (payload.login as Record<string, unknown>).passwordRevisionDate = normalizeImportedDate(sourceLogin?.passwordRevisionDate);
+  }
+
+  return payload;
 }
 
 export async function createCipher(

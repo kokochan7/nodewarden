@@ -1103,7 +1103,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         for (let i = 0; i < payload.ciphers.length; i++) {
           const raw = (payload.ciphers[i] || {}) as Record<string, unknown>;
           const draft = importCipherToDraft(raw, mode === 'target' ? targetFolderId : null);
-          const cipherPayload = await buildCipherImportPayload(session, draft);
+          const cipherPayload = await buildCipherImportPayload(session, draft, raw);
           const sourceId = String(raw.id || '').trim();
           if (sourceId) cipherPayload.id = sourceId;
           nextPayload.ciphers.push(cipherPayload);
